@@ -1,0 +1,40 @@
+# Environnement virtuel Python
+.venv/
+venv/
+env/
+.env/
+
+# Modèles (fichiers lourds)
+models/
+*.pt
+*.pth
+*.onnx
+*.engine
+
+# Dossiers de sortie (générés)
+detection_output_folder/
+sam_output_folder/
+*_output/
+
+# Cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Images de test (optionnel, décommentez si besoin)
+df/
+*.jpg
+# *.png
