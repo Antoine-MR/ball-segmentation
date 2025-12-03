@@ -1,0 +1,4 @@
+ultralytics
+inference
+pillow
+tqdm
