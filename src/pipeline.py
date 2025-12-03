@@ -1,5 +1,4 @@
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any, Callable
 
 from PIL import Image, ImageDraw, ImageOps
@@ -8,7 +7,7 @@ from PIL import Image, ImageDraw, ImageOps
 def img_pipeline(
     img_path: Path,
     detect_fn: Callable[[Path], list[float] | None],
-    segment_fn: Callable[[Path, list[float]], Any],
+    segment_fn: Callable[[Path], Any],
     det_output_dir: Path = Path("detection_output"),
     seg_output_dir: Path = Path("sam_output"),
 ):
@@ -19,20 +18,16 @@ def img_pipeline(
     img = Image.open(img_path)
     img_corrected = ImageOps.exif_transpose(img)
 
-    draw = ImageDraw.Draw(img_corrected)
+    img_viz = img_corrected.copy()
+    draw = ImageDraw.Draw(img_viz)
     draw.rectangle(bbox, outline="red", width=5)
 
     det_output_dir.mkdir(exist_ok=True, parents=True)
-    img_corrected.save(det_output_dir / (img_path.stem + ".png"))
+    img_viz.save(det_output_dir / (img_path.stem + ".png"))
 
-    # Save EXIF-corrected image for segmentation (bbox coords match corrected orientation)
-    with NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-        img_no_draw = ImageOps.exif_transpose(Image.open(img_path))
-        img_no_draw.save(tmp.name)
-        tmp_path = Path(tmp.name)
+    cropped = img_corrected.crop(bbox)
 
-    results_guided = segment_fn(tmp_path, bbox)
-    tmp_path.unlink()
+    results_guided = segment_fn(cropped)
 
     seg_output_dir.mkdir(exist_ok=True, parents=True)
 
