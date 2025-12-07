@@ -45,3 +45,5 @@ balls
 txt_output_folder
 runs
 yolo_dataset
+yolo_dataset_combined
+coco_persons
