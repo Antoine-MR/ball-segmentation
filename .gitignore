@@ -43,3 +43,5 @@ df/
 # Redondant Windows-style paths removed; use repo-relative paths above
 balls
 txt_output_folder
+runs
+yolo_dataset
