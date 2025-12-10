@@ -4,9 +4,13 @@ from PIL import Image
 
 from ultralytics import SAM, FastSAM  # type: ignore
 
+from .config import config
+
 
 class SAMSegmenter:
-    def __init__(self, model_name: str = "sam2.1_b.pt"):
+    def __init__(self, model_name: str | None = None):
+        if model_name is None:
+            model_name = str(config.get_path('models.sam2_1.path'))
         self.model = SAM(model_name)
 
     def segment(self, img: Image.Image):
@@ -18,7 +22,9 @@ class SAMSegmenter:
 
 
 class FastSAMSegmenter:
-    def __init__(self, model_name: str = "FastSAM-s.pt"):
+    def __init__(self, model_name: str | None = None):
+        if model_name is None:
+            model_name = str(config.get_path('models.fastsam.path'))
         self.model = FastSAM(model_name)
 
     def segment(self, img: Image.Image):

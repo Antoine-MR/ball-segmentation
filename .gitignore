@@ -1,23 +1,7 @@
-# Environnement virtuel Python
+# Python
 .venv/
 venv/
 env/
-.env/
-
-# Modèles (fichiers lourds)
-models/
-*.pt
-*.pth
-*.onnx
-*.engine
-
-# Dossiers de sortie (générés)
-detection_output_folder/
-seg_output_folder/
-sam_output_folder/
-*_output/
-
-# Cache Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -31,25 +15,74 @@ __pycache__/
 .vscode/
 .idea/
 
-
 # OS
 .DS_Store
 Thumbs.db
 
-# Images de test (optionnel, décommentez si besoin)
+# Models (heavy files)
+models/pretrained/*.pt
+models/pretrained/*.pth
+models/pretrained/*.onnx
+models/pretrained/*.engine
+models/trained/*.pt
+models/trained/*.pth
+models/trained/*.onnx
+models/trained/*.engine
+
+# Keep pretrained directory structure
+!models/pretrained/.gitkeep
+!models/trained/.gitkeep
+
+# Generated outputs
+runs/
+detection_output_folder/
+seg_output_folder/
+txt_output_folder/
+*_output/
+validation_output/
+
+# Raw datasets
+data/raw/balls/
+data/raw/txt_output_folder/
+data/raw/trashcan_dataset/
+data/raw/google_lens_trashcan_dl/
+data/raw/google_lens_trashcan_dl_jpg/
+data/raw/tom_trashcans/
+
+# Processed datasets
+data/processed/yolo_dataset/
+data/processed/yolo_dataset_combined/
+data/processed/coco_persons/
+
+# Legacy dataset folders (to be moved)
+balls/
+txt_output_folder/
+yolo_dataset/
+yolo_dataset_combined/
+coco_persons/
+trashcan_dataset/
+google_lens_trashcan_dl/
+google_lens_trashcan_dl_jpg/
+tom_trashcans/
+auto_trashcan_det/
+auto_trashcan_label/
+auto_trashcan_seg/
 df/
+
+# Test images
 *.jpg
-# *.png
-# Redondant Windows-style paths removed; use repo-relative paths above
-balls
-txt_output_folder
-runs
-yolo_dataset
-yolo_dataset_combined
-coco_persons
-trashcan_dataset
+*.jpeg
+*.png
+*.JPG
+*.JPEG
+*.PNG
+
+# Temporary test files
+cline_temp_tests/
 tmp_dir
 google_lens_trashcan_dl
 google_lens_trashcan_dl_jpg
 tom_trashcans
 auto_trashcan*
+archived_notebooks
+models/*.pt

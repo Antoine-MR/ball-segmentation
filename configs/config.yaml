@@ -1,0 +1,108 @@
+# Ball Segmentation Project Configuration
+
+# Paths
+paths:
+  # Raw datasets
+  raw_balls_images: "data/raw/balls"
+  raw_balls_labels: "data/raw/txt_output_folder"
+  raw_trashcan_dataset: "data/raw/trashcan_dataset"
+  raw_google_lens_trashcan: "data/raw/google_lens_trashcan_dl"
+  raw_tom_trashcan: "data/raw/tom_trashcans"
+  
+  # Processed datasets
+  processed_yolo_dataset: "data/processed/yolo_dataset"
+  processed_coco_persons: "data/processed/coco_persons"
+  processed_combined_dataset: "data/processed/yolo_dataset_combined"
+  
+  # Models
+  pretrained_models: "models/pretrained"
+  trained_models: "models/trained"
+  
+  # Outputs
+  runs_dir: "runs"
+  detection_output: "detection_output_folder"
+  segmentation_output: "seg_output_folder"
+  txt_output: "txt_output_folder"
+
+# Model settings
+models:
+  yolo_seg_nano:
+    path: "models/pretrained/yolo11n-seg.pt"
+    type: "segmentation"
+  
+  yolo_nano:
+    path: "models/pretrained/yolo11n.pt"
+    type: "detection"
+  
+  sam2_1:
+    path: "models/pretrained/sam2.1_b.pt"
+    type: "segmentation"
+  
+  fastsam:
+    path: "models/pretrained/FastSAM-s.pt"
+    type: "segmentation"
+
+# Training parameters
+training:
+  ball_person:
+    epochs: 10
+    batch_size: 8
+    image_size: 640
+    device: "cuda:0"  # or "cpu"
+    optimizer: "Adam"
+    learning_rate: 0.001
+    patience: 15
+    
+    # Data augmentation
+    augmentation:
+      hsv_h: 0.01
+      hsv_s: 0.5
+      hsv_v: 0.3
+      degrees: 5.0
+      translate: 0.1
+      scale: 0.3
+      flipud: 0.0
+      fliplr: 0.5
+      mosaic: 0.5
+    
+    # Training strategy
+    freeze_backbone: true
+    save_period: 5
+    workers: 0
+
+# Dataset parameters
+dataset:
+  train_val_ratio: 0.8
+  coco_person_images: 200
+  random_seed: 42
+  
+  # Class definitions
+  classes:
+    ball_person:
+      names:
+        0: "ball"
+        1: "person"
+    
+    trashcan:
+      num_classes: 67
+
+# Inference parameters
+inference:
+  confidence: 0.25
+  iou_threshold: 0.5
+  default_image_size: 640
+  show_labels: true
+  show_conf: true
+
+# API keys (use environment variables in production)
+api:
+  roboflow:
+    workspace: ""  # Set via env: ROBOFLOW_WORKSPACE
+    project: ""    # Set via env: ROBOFLOW_PROJECT
+    api_key: ""    # Set via env: ROBOFLOW_API_KEY
+
+# Logging
+logging:
+  level: "INFO"
+  save_predictions: true
+  verbose: false

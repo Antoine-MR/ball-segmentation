@@ -3,6 +3,8 @@ from pathlib import Path
 from inference import get_model
 from ultralytics import YOLO
 
+from .config import config
+
 
 class RoboflowDetector:
     def __init__(self, model_id: str, api_key: str):
@@ -25,14 +27,12 @@ class RoboflowDetector:
 
 
 class YOLODetector:
-    def __init__(self, model_path: str, conf: float = 0.25):
-        """
-        Détecteur basé sur YOLO avec support des prompts textuels
+    def __init__(self, model_path: str | None = None, conf: float | None = None):
+        if model_path is None:
+            model_path = str(config.get_path('models.yolo_nano.path'))
+        if conf is None:
+            conf = config.get('inference.confidence', 0.25)
         
-        Args:
-            model_path: Chemin vers le modèle YOLO (.pt)
-            conf: Seuil de confiance pour les détections
-        """
         self.model = YOLO(model_path)
         self.conf = conf
 
