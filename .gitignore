@@ -47,3 +47,9 @@ runs
 yolo_dataset
 yolo_dataset_combined
 coco_persons
+trashcan_dataset
+tmp_dir
+google_lens_trashcan_dl
+google_lens_trashcan_dl_jpg
+tom_trashcans
+auto_trashcan*
