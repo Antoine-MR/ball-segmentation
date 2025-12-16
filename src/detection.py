@@ -1,16 +1,34 @@
 from pathlib import Path
-
+import os
 from inference import get_model
-from ultralytics import YOLO
+from ultralytics.models import YOLO
+from PIL import Image, ImageOps
+import numpy as np
+from groundingdino.util.inference import load_model, predict
+import groundingdino.datasets.transforms as T
+import torch
 
 from .config import config
 
 
 class RoboflowDetector:
-    def __init__(self, model_id: str, api_key: str):
+    DEFAULT_MODEL_ID = "red-ball-detection-new/1"
+    
+    def __init__(self, model_id: str | None = None, api_key: str | None = None):
+        if model_id is None:
+            model_id = self.DEFAULT_MODEL_ID
+        
+        if api_key is None:
+            api_key = os.getenv("ROBOFLOW_API_KEY")
+            if api_key is None:
+                raise ValueError(
+                    "ROBOFLOW_API_KEY not found. "
+                    "Set it as environment variable or pass it explicitly."
+                )
+        
         self.model = get_model(model_id=model_id, api_key=api_key)
 
-    def detect(self, img_path: Path) -> list[float] | None:
+    def detect(self, img_path: Path) -> dict | None:
         results = self.model.infer(str(img_path))
         predictions = results[0].predictions
 
@@ -18,12 +36,18 @@ class RoboflowDetector:
             return None
 
         det = predictions[0]
-        return [
+        bbox = [
             det.x - det.width / 2,
             det.y - det.height / 2,
             det.x + det.width / 2,
             det.y + det.height / 2,
         ]
+        
+        return {
+            'bbox': bbox,
+            'label': det.class_name if hasattr(det, 'class_name') else 'ball',
+            'confidence': det.confidence if hasattr(det, 'confidence') else 0.0
+        }
 
 
 class YOLODetector:
@@ -34,7 +58,7 @@ class YOLODetector:
             conf = config.get('inference.confidence', 0.25)
         
         self.model = YOLO(model_path)
-        self.conf = conf
+        self.conf: float | None = conf
 
     def detect(self, img_path: Path) -> dict | None:
         """
@@ -77,8 +101,123 @@ class YOLODetector:
             'label': label,
             'confidence': confidence
         }
+
+
+class GroundingDINODetector:
+    """Détecteur basé sur Grounding DINO avec prompt textuel"""
     
-    def detect_all(self, img_path: Path, prompt: str = None) -> list[dict]:
+    def __init__(self, model_config_path: str | None = None, 
+                 model_checkpoint_path: str | None = None,
+                 box_threshold: float = 0.25,
+                 text_threshold: float = 0.2,
+                 device: str = "cuda"):
+
+        
+        # Chemins par défaut pour Grounding DINO
+        if model_config_path is None:
+            # Essayer le chemin dans le package groundingdino-py
+            import groundingdino
+            package_dir = Path(groundingdino.__file__).parent
+            model_config_path = str(package_dir / "config" / "GroundingDINO_SwinT_OGC.py")
+            
+        if model_checkpoint_path is None:
+            model_checkpoint_path = "models/pretrained/groundingdino_swint_ogc.pth"
+            if not Path(model_checkpoint_path).exists():
+                raise FileNotFoundError(
+                    f"Model checkpoint not found at {model_checkpoint_path}. "
+                    "Download from: https://github.com/IDEA-Research/GroundingDINO/releases"
+                )
+        
+        self.model = load_model(model_config_path, model_checkpoint_path, device=device)
+        self.box_threshold = box_threshold
+        self.text_threshold = text_threshold
+        self.device = device
+        self.conf = None
+    
+    def detect(self, img_path: Path, text_prompt: str, return_all: bool = False, debug: bool = False) -> dict | None:
+        """
+        Détecte les objets dans l'image en fonction du prompt textuel
+        
+        Args:
+            img_path: Chemin vers l'image
+            text_prompt: Prompt textuel (ex: "red ball", "person")
+            return_all: Si True, retourne toutes les détections, sinon la meilleure
+            debug: Si True, affiche des informations de debugging
+        
+        Returns:
+            Dictionnaire avec 'bbox' [x1, y1, x2, y2], 'label' et 'confidence' ou None
+        """
+        import time
+        start_time = time.time()
+        
+        # Charger l'image avec correction EXIF (comme dans img_pipeline)
+        pil_image = Image.open(img_path)
+        pil_image = ImageOps.exif_transpose(pil_image)  # Correction rotation EXIF
+        image_source = np.array(pil_image)
+        
+        # Transformer pour Grounding DINO
+        transform = T.Compose([
+            T.RandomResize([800], max_size=1333),
+            T.ToTensor(),
+            T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ])
+        image_transformed, _ = transform(pil_image, None)
+        image = image_transformed
+        
+        if debug:
+            print(f"  Image loaded: {image_source.shape}, tensor: {image.shape}")
+        
+        # Nettoyer le prompt (ajouter un point final comme dans la démo)
+        clean_prompt = text_prompt.strip().lower()
+        if not clean_prompt.endswith('.'):
+            clean_prompt = clean_prompt + '.'
+        
+        if debug:
+            print(f"  Prompt: '{clean_prompt}'")
+            print(f"  Thresholds: box={self.box_threshold}, text={self.text_threshold}")
+        
+        # Prédiction
+        boxes, logits, phrases = predict(
+            model=self.model,
+            image=image,
+            caption=clean_prompt,
+            box_threshold=self.box_threshold,
+            text_threshold=self.text_threshold,
+            device=self.device
+        )
+        
+        elapsed = time.time() - start_time
+        
+        if debug:
+            print(f"  Inference time: {elapsed:.2f}s")
+            print(f"  Detections found: {len(boxes)}")
+            if len(boxes) > 0:
+                for i, (box, logit, phrase) in enumerate(zip(boxes, logits, phrases)):
+                    print(f"    [{i}] {phrase}: confidence={logit:.3f}, box={box}")
+        
+        if len(boxes) == 0:
+            return None
+        
+        # Prendre la première détection (plus haute confiance)
+        box = boxes[0]
+        logit = logits[0]
+        phrase = phrases[0]
+        
+        # Convertir de format [cx, cy, w, h] normalisé vers [x1, y1, x2, y2] pixels
+        h, w = image_source.shape[:2]
+        cx, cy, bw, bh = box
+        x1 = (cx - bw/2) * w
+        y1 = (cy - bh/2) * h
+        x2 = (cx + bw/2) * w
+        y2 = (cy + bh/2) * h
+        
+        return {
+            'bbox': [float(x1), float(y1), float(x2), float(y2)],
+            'label': phrase,
+            'confidence': float(logit)
+        }
+    
+    def detect_all(self, img_path: Path, prompt: str|None  = None) -> list[dict]:
         """
         Détecte tous les objets dans l'image
         

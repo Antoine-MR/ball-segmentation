@@ -2,3 +2,4 @@ ultralytics
 inference
 pillow
 tqdm
+groundingdino-py

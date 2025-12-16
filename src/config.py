@@ -1,11 +1,12 @@
 from pathlib import Path
+import typing
 import yaml
 from typing import Any
 
 class Config:
     """Global configuration loader"""
-    _instance = None
-    _config = None
+    _instance: typing.Any = None
+    _config: typing.Any = None
     
     def __new__(cls):
         if cls._instance is None:

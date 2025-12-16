@@ -13,9 +13,21 @@ def img_pipeline(
     seg_output_dir: Path = Path("sam_output"),
     txt_output_dir: Path | None = None,
     mode: Literal["crop", "bbox"] = "crop",
+    empty_dir: str | None = None,
 ):
     detection = detect_fn(img_path)
     if detection is None:
+        # Si empty_dir est spécifié, copier l'image et créer un fichier label vide
+        if empty_dir is not None:
+            import shutil
+            empty_path = Path("datasets/preprocessed") / empty_dir
+            empty_path.mkdir(exist_ok=True, parents=True)
+            shutil.copy(img_path, empty_path / img_path.name)
+            
+            if txt_output_dir is not None:
+                txt_output_dir.mkdir(exist_ok=True, parents=True)
+                txt_path = txt_output_dir / f"{img_path.stem}.txt"
+                txt_path.write_text("")  # Fichier vide
         return
     
     # Support pour ancien format (list) et nouveau format (dict)
@@ -49,7 +61,7 @@ def img_pipeline(
     
     # Position du texte (au-dessus de la bbox)
     text_x = bbox[0]
-    text_y = max(0, bbox[1] - font_size - 5)
+    text_y = max(0, bbox[1] - font_size - 5) # type: ignore
     
     # Dessiner un fond pour le texte
     bbox_text = draw.textbbox((text_x, text_y), text, font=font)
