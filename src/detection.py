@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+from typing import overload, Literal
 from inference import get_model
 from ultralytics.models import YOLO
 from PIL import Image, ImageOps
@@ -134,18 +135,50 @@ class GroundingDINODetector:
         self.device = device
         self.conf = None
     
-    def detect(self, img_path: Path, text_prompt: str, return_all: bool = False, debug: bool = False) -> dict | None:
+    @overload
+    def detect(self, img_path: Path, text_prompt: str, return_all_by_label: Literal[False] = False, debug: bool = False) -> dict | None: ...
+    
+    @overload
+    def detect(self, img_path: Path, text_prompt: str, return_all_by_label: Literal[True] = True, debug: bool = False) -> dict[str, list[dict]]: ...
+    
+    def detect(self, img_path: Path, text_prompt: str, return_all_by_label: bool = False, debug: bool = False) -> dict | None | dict[str, list[dict]]:
         """
         Détecte les objets dans l'image en fonction du prompt textuel
         
         Args:
             img_path: Chemin vers l'image
-            text_prompt: Prompt textuel (ex: "red ball", "person")
-            return_all: Si True, retourne toutes les détections, sinon la meilleure
+            text_prompt: Prompt textuel (ex: "red ball") ou prompts multiples séparés par ' . ' (ex: "red ball . human")
+            return_all_by_label: Si True, retourne dict[label, list[detections]] en parsant les prompts séparés par ' . '
             debug: Si True, affiche des informations de debugging
         
         Returns:
-            Dictionnaire avec 'bbox' [x1, y1, x2, y2], 'label' et 'confidence' ou None
+            - Si return_all_by_label=False: dict avec 'bbox', 'label', 'confidence' ou None (meilleure détection)
+            - Si return_all_by_label=True: dict[str, list[dict]] groupé par label
+        """
+        # Mode multi-label: parser les prompts séparés par ' . '
+        if return_all_by_label:
+            # Split par ' . ' pour obtenir les prompts individuels
+            prompts = [p.strip() for p in text_prompt.split('.') if p.strip()]
+            
+            result: dict[str, list[dict]] = {}
+            for prompt in prompts:
+                detections = self._detect_single_prompt(img_path, prompt, return_all=True, debug=debug)
+                # Utiliser le prompt comme clé (nettoyé)
+                label_key = prompt.strip().lower()
+                result[label_key] = detections
+            
+            return result
+        
+        # Mode single detection (comportement original)
+        detections = self._detect_single_prompt(img_path, text_prompt, return_all=False, debug=debug)
+        return detections[0] if detections else None
+    
+    def _detect_single_prompt(self, img_path: Path, text_prompt: str, return_all: bool = False, debug: bool = False) -> list[dict]:
+        """
+        Détecte les objets pour un seul prompt
+        
+        Returns:
+            Liste de détections (vide si aucune détection)
         """
         import time
         start_time = time.time()
@@ -196,26 +229,31 @@ class GroundingDINODetector:
                     print(f"    [{i}] {phrase}: confidence={logit:.3f}, box={box}")
         
         if len(boxes) == 0:
-            return None
+            return []
         
-        # Prendre la première détection (plus haute confiance)
-        box = boxes[0]
-        logit = logits[0]
-        phrase = phrases[0]
-        
-        # Convertir de format [cx, cy, w, h] normalisé vers [x1, y1, x2, y2] pixels
+        # Convertir toutes les détections
         h, w = image_source.shape[:2]
-        cx, cy, bw, bh = box
-        x1 = (cx - bw/2) * w
-        y1 = (cy - bh/2) * h
-        x2 = (cx + bw/2) * w
-        y2 = (cy + bh/2) * h
+        detections = []
         
-        return {
-            'bbox': [float(x1), float(y1), float(x2), float(y2)],
-            'label': phrase,
-            'confidence': float(logit)
-        }
+        for box, logit, phrase in zip(boxes, logits, phrases):
+            # Convertir de format [cx, cy, w, h] normalisé vers [x1, y1, x2, y2] pixels
+            cx, cy, bw, bh = box
+            x1 = (cx - bw/2) * w
+            y1 = (cy - bh/2) * h
+            x2 = (cx + bw/2) * w
+            y2 = (cy + bh/2) * h
+            
+            detections.append({
+                'bbox': [float(x1), float(y1), float(x2), float(y2)],
+                'label': phrase,
+                'confidence': float(logit)
+            })
+        
+        # Si return_all=False, retourner seulement la meilleure
+        if not return_all and len(detections) > 0:
+            return [detections[0]]
+        
+        return detections
     
     def detect_all(self, img_path: Path, prompt: str|None  = None) -> list[dict]:
         """

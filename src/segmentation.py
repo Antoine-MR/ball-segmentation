@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from PIL import Image
+import numpy as np
 
 from ultralytics import SAM, FastSAM  # type: ignore
 
@@ -17,8 +18,20 @@ class SAMSegmenter:
         cx, cy = img.width // 2, img.height // 2
         return self.model(img, points=[[cx, cy]], labels=[1], verbose=False)
 
-    def segment_bbox(self, img_path: Path, bbox: list[float]):
-        return self.model(str(img_path), bboxes=[bbox], verbose=False)
+    def segment_bbox(self, img_path: Path | Image.Image | np.ndarray, bbox: list[float]):
+        """Segment using bounding box guidance
+        
+        Args:
+            img_path: Path to image, PIL Image, or numpy array
+            bbox: Bounding box [x1, y1, x2, y2]
+        """
+        # Convert to string path if Path object, otherwise pass directly
+        if isinstance(img_path, Path):
+            img_input = str(img_path)
+        else:
+            img_input = img_path
+        
+        return self.model(img_input, bboxes=[bbox], verbose=False)
 
 
 class FastSAMSegmenter:
@@ -45,5 +58,17 @@ class FastSAMSegmenter:
         
         return results
 
-    def segment_bbox(self, img_path: Path, bbox: list[float]):
-        return self.model(str(img_path), bboxes=[bbox], verbose=False)
+    def segment_bbox(self, img_path: Path | Image.Image | np.ndarray, bbox: list[float]):
+        """Segment using bounding box guidance
+        
+        Args:
+            img_path: Path to image, PIL Image, or numpy array
+            bbox: Bounding box [x1, y1, x2, y2]
+        """
+        # Convert to string path if Path object, otherwise pass directly
+        if isinstance(img_path, Path):
+            img_input = str(img_path)
+        else:
+            img_input = img_path
+        
+        return self.model(img_input, bboxes=[bbox], verbose=False)

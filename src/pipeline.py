@@ -1,175 +1,184 @@
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any, Callable, Literal
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import shutil
 
 
 def img_pipeline(
     img_path: Path,
-    detect_fn: Callable[[Path], dict | None],
+    detect_fn: Callable[[Path], dict[str, list[dict]]],
     segment_fn: Callable[..., Any],
-    det_output_dir: Path = Path("detection_output"),
-    seg_output_dir: Path = Path("sam_output"),
+    det_output_dir: Path,
+    seg_output_dir: Path,
+    empty_dir: Path,
     txt_output_dir: Path | None = None,
-    mode: Literal["crop", "bbox"] = "crop",
-    empty_dir: str | None = None,
+    images_output_dir: Path | None = None,
 ):
-    detection = detect_fn(img_path)
-    if detection is None:
-        # Si empty_dir est spécifié, copier l'image et créer un fichier label vide
-        if empty_dir is not None:
-            import shutil
-            empty_path = Path("datasets/preprocessed") / empty_dir
-            empty_path.mkdir(exist_ok=True, parents=True)
-            shutil.copy(img_path, empty_path / img_path.name)
-            
-            if txt_output_dir is not None:
-                txt_output_dir.mkdir(exist_ok=True, parents=True)
-                txt_path = txt_output_dir / f"{img_path.stem}.txt"
-                txt_path.write_text("")  # Fichier vide
-        return
+    """
+    Pipeline multi-classes pour détection et segmentation
     
-    # Support pour ancien format (list) et nouveau format (dict)
-    if isinstance(detection, dict):
-        bbox = detection['bbox']
-        label = detection.get('label', 'object')
-        confidence = detection.get('confidence', 0.0)
-    else:
-        bbox = detection
-        label = 'object'
-        confidence = 0.0
+    Args:
+        img_path: Chemin vers l'image
+        detect_fn: Fonction de détection retournant dict[label, list[detections]]
+        segment_fn: Fonction de segmentation acceptant (img, bbox)
+        det_output_dir: Dossier de sortie pour visualisation des détections
+        seg_output_dir: Dossier de sortie pour visualisation des segmentations
+        txt_output_dir: Dossier racine des labels (sous-dossiers par label)
+        empty_dir: Dossier pour images sans détections
+        images_output_dir: Dossier pour copier les images originales (ready/images)
+    """
+    detections_by_label = detect_fn(img_path)
+    
+    # Vérifier si aucune détection
+    total_detections = sum(len(dets) for dets in detections_by_label.values())
+    if total_detections == 0:
+        shutil.copy(img_path, empty_dir / img_path.name)
+        
+        if txt_output_dir is not None:
+            # Créer fichiers vides pour chaque label
+            for label in detections_by_label.keys():
+                label_dir = txt_output_dir / label
+                label_dir.mkdir(exist_ok=True, parents=True)
+                txt_path = label_dir / f"{img_path.stem}.txt"
+                txt_path.write_text("")
+        return
 
+    # Charger l'image une seule fois avec correction EXIF
     img = Image.open(img_path)
     img_corrected = ImageOps.exif_transpose(img)
-
+    img_array = np.array(img_corrected)
+    
+    # === 1. DETECTION VISUALIZATION ===
     img_viz = img_corrected.copy()
     draw = ImageDraw.Draw(img_viz)
-    draw.rectangle(bbox, outline="red", width=5)
     
-    # Afficher le label et la confiance
+    # Palette de couleurs pour les différentes classes
+    colors = ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'cyan', 'magenta']
+    label_to_color = {}
+    color_idx = 0
+    
     try:
-        # Essayer de charger une police avec une taille appropriée
         font_size = max(20, int(min(img_viz.width, img_viz.height) * 0.03))
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
     except:
-        # Utiliser la police par défaut si la fonte n'est pas disponible
         font = ImageFont.load_default()
     
-    # Texte à afficher
-    text = f"{label} ({confidence:.2f})"
+    # Dessiner toutes les détections
+    for label, detections in detections_by_label.items():
+        if label not in label_to_color:
+            label_to_color[label] = colors[color_idx % len(colors)]
+            color_idx += 1
+        
+        color = label_to_color[label]
+        
+        for det in detections:
+            bbox = det['bbox']
+            confidence = det['confidence']
+            
+            # Bbox
+            draw.rectangle(bbox, outline=color, width=5)
+            
+            # Texte
+            text = f"{label} ({confidence:.2f})"
+            text_x = bbox[0]
+            text_y = max(0, bbox[1] - font_size - 5)  # type: ignore
+            
+            bbox_text = draw.textbbox((text_x, text_y), text, font=font)
+            draw.rectangle(bbox_text, fill=color)
+            draw.text((text_x, text_y), text, fill="white", font=font)
     
-    # Position du texte (au-dessus de la bbox)
-    text_x = bbox[0]
-    text_y = max(0, bbox[1] - font_size - 5) # type: ignore
-    
-    # Dessiner un fond pour le texte
-    bbox_text = draw.textbbox((text_x, text_y), text, font=font)
-    draw.rectangle(bbox_text, fill="red")
-    draw.text((text_x, text_y), text, fill="white", font=font)
-
     det_output_dir.mkdir(exist_ok=True, parents=True)
     img_viz.save(det_output_dir / (img_path.stem + ".png"))
-
-    if mode == "crop":
-        cropped = img_corrected.crop(bbox)
-        results_guided = segment_fn(cropped)
-    else:
-        with NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            img_corrected.save(tmp, format="PNG")
-            tmp_path = Path(tmp.name)
+    
+    # === 2. SEGMENTATION ===
+    # Créer un masque combiné pour visualisation (avec couleurs par classe)
+    h, w = img_array.shape[:2]
+    combined_mask = np.zeros((h, w, 3), dtype=np.uint8)
+    
+    # Mapper les labels vers des couleurs RGB
+    label_colors_rgb = {}
+    for label, color_name in label_to_color.items():
+        rgb = mcolors.to_rgb(color_name)
+        label_colors_rgb[label] = tuple(int(c * 255) for c in rgb)
+    
+    all_masks_data = []  # Pour sauvegarder les txt files
+    
+    for label, detections in detections_by_label.items():
+        color_rgb = label_colors_rgb[label]
         
-        try:
-            results_guided = segment_fn(tmp_path, bbox)
-        finally:
-            if tmp_path.exists():
-                tmp_path.unlink()
-
+        for det in detections:
+            bbox = det['bbox']
+            
+            # Segmenter
+            results = segment_fn(img_corrected, bbox)
+            
+            for result in results:
+                if result.masks is not None:
+                    mask_data = result.masks.data[0]
+                    
+                    # Stocker pour génération txt
+                    all_masks_data.append({
+                        'label': label,
+                        'mask': mask_data,
+                        'bbox': bbox
+                    })
+                    
+                    # Appliquer la couleur au masque combiné
+                    mask_binary = (mask_data.cpu().numpy() > 0.5)
+                    for c in range(3):
+                        combined_mask[:, :, c][mask_binary] = color_rgb[c]
+    
+    # === 3. SAVE SEGMENTATION VISUALIZATION ===
     seg_output_dir.mkdir(exist_ok=True, parents=True)
-
+    
+    # Créer une visualisation avec l'image originale + overlay du masque
+    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+    ax.imshow(img_array)
+    ax.imshow(combined_mask, alpha=0.5)
+    ax.axis('off')
+    plt.tight_layout()
+    plt.savefig(seg_output_dir / (img_path.stem + ".png"), bbox_inches='tight', pad_inches=0, dpi=150)
+    plt.close()
+    
+    # === 4. SAVE LABELS (TXT FILES) ===
     if txt_output_dir is not None:
-        txt_output_dir.mkdir(exist_ok=True, parents=True)
-
-    for result in results_guided:
-        res_plotted = result.plot()
-        img_sam = Image.fromarray(res_plotted[..., ::-1])
-        img_sam.save(seg_output_dir / (img_path.stem + ".png"))
-
-        if txt_output_dir is not None and result.masks is not None:
-            mask_data = result.masks.data[0]
+        for mask_info in all_masks_data:
+            label = mask_info['label']
+            mask_data = mask_info['mask']
+            
+            # Créer le sous-dossier pour ce label
+            label_dir = txt_output_dir / label
+            label_dir.mkdir(exist_ok=True, parents=True)
+            
+            # Extraire les points du masque
             ys, xs = (mask_data > 0.5).nonzero(as_tuple=True)
             if len(xs) == 0:
                 continue
 
-            h, w = mask_data.shape
-            xs_norm = xs.float() / float(w)
-            ys_norm = ys.float() / float(h)
+            mask_h, mask_w = mask_data.shape
+            xs_norm = xs.float() / float(mask_w)
+            ys_norm = ys.float() / float(mask_h)
 
-            parts: list[str] = ["0"]
+            parts: list[str] = ["0"]  # Class ID (toujours 0 dans le contexte d'un label spécifique)
             for x_val, y_val in zip(xs_norm.tolist(), ys_norm.tolist()):
                 parts.append(f"{x_val:.6f}")
                 parts.append(f"{y_val:.6f}")
 
-            txt_path = txt_output_dir / f"{img_path.stem}.txt"
-            txt_path.write_text(" ".join(parts))
-
-
-def img_pipeline_multi(
-    img_path: Path,
-    detect_all_fn: Callable[[Path], list[dict]],
-    det_output_dir: Path = Path("detection_output"),
-):
-    """
-    Pipeline pour afficher toutes les détections sur l'image
+            # Sauvegarder dans le dossier du label
+            txt_path = label_dir / f"{img_path.stem}.txt"
+            
+            # Si le fichier existe déjà, append (multiple instances de la même classe)
+            if txt_path.exists():
+                existing = txt_path.read_text()
+                txt_path.write_text(existing + "\n" + " ".join(parts))
+            else:
+                txt_path.write_text(" ".join(parts))
     
-    Args:
-        img_path: Chemin vers l'image
-        detect_all_fn: Fonction de détection retournant une liste de dicts avec 'bbox', 'label', 'confidence'
-        det_output_dir: Dossier de sortie pour les images avec détections
-    """
-    detections = detect_all_fn(img_path)
-    if not detections:
-        return
-
-    img = Image.open(img_path)
-    img_corrected = ImageOps.exif_transpose(img)
-
-    img_viz = img_corrected.copy()
-    draw = ImageDraw.Draw(img_viz)
-    
-    # Charger la police
-    try:
-        font_size = max(20, int(min(img_viz.width, img_viz.height) * 0.03))
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-    except:
-        font = ImageFont.load_default()
-        font_size = 12
-    
-    # Dessiner toutes les détections
-    colors = ["red", "blue", "green", "yellow", "orange", "purple", "cyan", "magenta"]
-    
-    for idx, detection in enumerate(detections):
-        bbox = detection['bbox']
-        label = detection.get('label', 'object')
-        confidence = detection.get('confidence', 0.0)
-        
-        # Couleur différente pour chaque détection
-        color = colors[idx % len(colors)]
-        
-        # Dessiner le rectangle
-        draw.rectangle(bbox, outline=color, width=5)
-        
-        # Texte à afficher
-        text = f"{label} ({confidence:.2f})"
-        
-        # Position du texte (au-dessus de la bbox)
-        text_x = bbox[0]
-        text_y = max(0, bbox[1] - font_size - 5)
-        
-        # Dessiner un fond pour le texte
-        bbox_text = draw.textbbox((text_x, text_y), text, font=font)
-        draw.rectangle(bbox_text, fill=color)
-        draw.text((text_x, text_y), text, fill="white", font=font)
-
-    det_output_dir.mkdir(exist_ok=True, parents=True)
-    img_viz.save(det_output_dir / (img_path.stem + ".jpg"))
+    # === 5. COPY ORIGINAL IMAGE ===
+    if images_output_dir is not None:
+        images_output_dir.mkdir(exist_ok=True, parents=True)
+        shutil.copy(img_path, images_output_dir / img_path.name)
