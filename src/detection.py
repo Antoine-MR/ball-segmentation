@@ -6,10 +6,98 @@ from ultralytics.models import YOLO
 from PIL import Image, ImageOps
 import numpy as np
 from groundingdino.util.inference import load_model, predict
+from groundingdino.util.utils import get_phrases_from_posmap
 import groundingdino.datasets.transforms as T
+from groundingdino.models.GroundingDINO.groundingdino import GroundingDINO
 import torch
 
 from .config import config
+
+
+def predict_custom(
+        model,
+        image: torch.Tensor,
+        caption: str,
+        box_threshold: float,
+        text_threshold: float,
+        device: str = "cuda",
+        remove_combined: bool = False
+):
+    model = model.to(device)
+    image = image.to(device)
+
+    with torch.no_grad():
+        outputs = model(image[None], captions=[caption])
+
+    prediction_logits = outputs["pred_logits"].cpu().sigmoid()[0]  # prediction_logits.shape = (nq, 256)
+    prediction_boxes = outputs["pred_boxes"].cpu()[0]  # prediction_boxes.shape = (nq, 4)
+
+    mask = prediction_logits.max(dim=1)[0] > box_threshold
+    logits = prediction_logits[mask]  # logits.shape = (n, 256)
+    boxes = prediction_boxes[mask]  # boxes.shape = (n, 4)
+
+    tokenizer = model.tokenizer
+    tokenized = tokenizer(caption)
+    
+    if remove_combined:
+        phrases = []
+        confidences = []
+        
+        # Get dot token ID (assuming it's the second token in " . ")
+        # Or just use the one from tokenizer(".")
+        dot_token_id = tokenizer(".").input_ids[1]
+        
+        input_ids = tokenized["input_ids"]
+        
+        for logit in logits:
+            # Split tokens by '.' and pick the segment with highest max score
+            segments = [] # List of (max_score, segment_indices)
+            current_indices = []
+            
+            for i, token_id in enumerate(input_ids):
+                if token_id == dot_token_id:
+                    if current_indices:
+                        # End of segment
+                        seg_scores = logit[current_indices]
+                        segments.append((seg_scores.max().item(), current_indices))
+                        current_indices = []
+                elif token_id not in [tokenizer.cls_token_id, tokenizer.sep_token_id, tokenizer.pad_token_id]:
+                    current_indices.append(i)
+            
+            # Handle last segment
+            if current_indices:
+                 seg_scores = logit[current_indices]
+                 segments.append((seg_scores.max().item(), current_indices))
+            
+            # Filter segments > text_threshold
+            valid_segments = [s for s in segments if s[0] > text_threshold]
+            
+            if valid_segments:
+                # Pick the best one (highest probability retained)
+                best_score, best_indices = max(valid_segments, key=lambda x: x[0])
+                
+                # Construct phrase
+                posmap = torch.zeros_like(logit, dtype=torch.bool)
+                posmap[best_indices] = True
+                
+                phrase = get_phrases_from_posmap(posmap, tokenized, tokenizer).replace('.', '')
+                phrases.append(phrase)
+                confidences.append(best_score)
+            else:
+                # Fallback: use original method if no segment passes (shouldn't happen if box passed)
+                phrase = get_phrases_from_posmap(logit > text_threshold, tokenized, tokenizer).replace('.', '')
+                phrases.append(phrase)
+                confidences.append(logit.max().item())
+                
+        return boxes, torch.tensor(confidences), phrases
+
+    else:
+        phrases = [
+            get_phrases_from_posmap(logit > text_threshold, tokenized, tokenizer).replace('.', '')
+            for logit
+            in logits
+        ]
+        return boxes, logits.max(dim=1)[0], phrases
 
 
 class RoboflowDetector:
@@ -129,7 +217,7 @@ class GroundingDINODetector:
                     "Download from: https://github.com/IDEA-Research/GroundingDINO/releases"
                 )
         
-        self.model = load_model(model_config_path, model_checkpoint_path, device=device)
+        self.model: GroundingDINO = load_model(model_config_path, model_checkpoint_path, device=device)
         self.box_threshold = box_threshold
         self.text_threshold = text_threshold
         self.device = device
@@ -157,15 +245,18 @@ class GroundingDINODetector:
         """
         # Mode multi-label: parser les prompts séparés par ' . '
         if return_all_by_label:
-            # Split par ' . ' pour obtenir les prompts individuels
-            prompts = [p.strip() for p in text_prompt.split('.') if p.strip()]
+            # Optimisation: on lance une seule détection avec tous les prompts
+            # Le filtrage des "combined" est géré dans _detect_single_prompt
+            detections = self._detect_single_prompt(img_path, text_prompt, return_all=True, debug=debug)
             
-            result: dict[str, list[dict]] = {}
-            for prompt in prompts:
-                detections = self._detect_single_prompt(img_path, prompt, return_all=True, debug=debug)
-                # Utiliser le prompt comme clé (nettoyé)
-                label_key = prompt.strip().lower()
-                result[label_key] = detections
+            # Grouper par label
+            prompts = [p.strip().lower() for p in text_prompt.split('.') if p.strip()]
+            result: dict[str, list[dict]] = {p: [] for p in prompts}
+            
+            for det in detections:
+                label = det['label']
+                if label in result:
+                    result[label].append(det)
             
             return result
         
@@ -209,15 +300,18 @@ class GroundingDINODetector:
             print(f"  Prompt: '{clean_prompt}'")
             print(f"  Thresholds: box={self.box_threshold}, text={self.text_threshold}")
         
-        # Prédiction
-        boxes, logits, phrases = predict(
+        # Prédiction avec notre fonction custom qui gère remove_combined
+        boxes, logits, phrases = predict_custom(
             model=self.model,
             image=image,
             caption=clean_prompt,
             box_threshold=self.box_threshold,
             text_threshold=self.text_threshold,
-            device=self.device
+            device=self.device,
+            remove_combined=True
         )
+
+        # Plus besoin de filtrage manuel ici car predict_custom le fait mieux
         
         elapsed = time.time() - start_time
         

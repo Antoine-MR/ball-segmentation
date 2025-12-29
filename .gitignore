@@ -92,3 +92,4 @@ archived_notebooks
 models/*.pt
 raw
 datasets
+*.pt
