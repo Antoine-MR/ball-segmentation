@@ -92,4 +92,5 @@ archived_notebooks
 models/*.pt
 raw
 datasets
-*.ptlabels.zip
+*.pt
+labels.zip

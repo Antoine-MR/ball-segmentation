@@ -1,8 +1,8 @@
 """
-Data augmentation utilities for trashcan dataset balancing.
+Data augmentation utilities for dataset balancing.
 
 This module provides tools to perform targeted augmentation on under-represented
-classes (particularly trashcans) to balance the dataset distribution.
+classes to balance the dataset distribution.
 """
 
 from pathlib import Path
@@ -22,49 +22,60 @@ except ImportError:
     from albumentations import Compose
 
 
-def find_trashcan_training_images(dataset_path):
-    """Find all training images that contain trashcans.
+def find_class_training_images(dataset_path, class_id, exclude_augmented=True):
+    """Find all training images that contain a specific class.
     
     Args:
         dataset_path: Path to the YOLO dataset root directory
+        class_id: The class ID to search for (int)
+        exclude_augmented: If True, skip images with '_aug' in filename
         
     Returns:
-        List of tuples (image_path, label_path) for images containing trashcans
+        List of tuples (image_path, label_path) for images containing the class
     """
     train_labels_dir = dataset_path / 'train' / 'labels'
     train_images_dir = dataset_path / 'train' / 'images'
     
-    trashcan_files = []
+    class_files = []
+    class_prefix = f"{class_id} "
     
     for label_file in train_labels_dir.glob("*.txt"):
+        # Skip augmented images to avoid re-augmenting them
+        if exclude_augmented and '_aug' in label_file.stem:
+            continue
+            
         try:
             with open(label_file, 'r') as f:
-                has_trashcan = any(line.strip().startswith('2 ') for line in f)
+                has_class = any(line.strip().startswith(class_prefix) for line in f)
             
-            if has_trashcan:
+            if has_class:
                 img_name = label_file.stem
                 for ext in ['.jpg', '.jpeg', '.png']:
                     img_path = train_images_dir / f"{img_name}{ext}"
                     if img_path.exists():
-                        trashcan_files.append((img_path, label_file))
+                        class_files.append((img_path, label_file))
                         break
         except:
             continue
     
-    return trashcan_files
+    return class_files
 
 
-def create_augmentation_pipeline(aug_strength='strong'):
-    """Create augmentation pipeline for trashcan images.
+def get_augmentation_pipeline(config: Compose | str ='strong'):
+    """Get augmentation pipeline from config or preset name.
     
     Args:
-        aug_strength: Either 'strong' or 'light' augmentation
+        config: Either a string ('strong', 'light') or an albumentations.Compose object
         
     Returns:
         Albumentations Compose pipeline with keypoint support
     """
-    if aug_strength == 'strong':
-        return Compose([
+    # If config is already a Compose object, return it
+    if isinstance(config, A.Compose):
+        return config
+
+    if config == 'strong':
+        return Compose([  # type: ignore
             A.RandomRotate90(p=0.5),
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.3),
@@ -80,12 +91,14 @@ def create_augmentation_pipeline(aug_strength='strong'):
                 p=0.7
             ),
         ], keypoint_params=A.KeypointParams(format='xy', remove_invisible=False))
-    else:
+    elif config == 'light':
         return Compose([
             A.HorizontalFlip(p=0.5),
             A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
             A.RandomRotate90(p=0.3),
         ], keypoint_params=A.KeypointParams(format='xy', remove_invisible=False))
+    else:
+        raise ValueError(f"Unknown augmentation config: {config}")
 
 
 def augment_image_with_labels(img_path, label_path, transform):
@@ -151,44 +164,41 @@ def augment_image_with_labels(img_path, label_path, transform):
     return aug_img, augmented_labels
 
 
-def augment_trashcan_dataset(dataset_path, num_augmentations=15, aug_strength='strong'):
-    """Create multiple augmented copies of trashcan images.
-    
-    This function finds all training images containing trashcans and creates
-    multiple augmented variants to balance class distribution.
+def augment_class_dataset(dataset_path, class_id, num_augmentations=15, aug_config: Compose | str ='strong'):
+    """Create multiple augmented copies of images containing a specific class.
     
     Args:
         dataset_path: Path to the YOLO dataset root directory
+        class_id: The class ID to target
         num_augmentations: Number of augmented copies to create per image
-        aug_strength: Augmentation strength ('strong' or 'light')
+        aug_config: Augmentation config ('strong', 'light', or A.Compose object)
         
     Returns:
         Number of successfully created augmented images
     """
-    print("="*60)
-    print("TRASHCAN DATA AUGMENTATION")
-    print("="*60)
+    print(f"\n{'='*60}")
+    print(f"AUGMENTATION FOR CLASS {class_id}")
+    print(f"{'='*60}")
     
-    # Find trashcan images
-    trashcan_files = find_trashcan_training_images(dataset_path)
-    print(f"\nFound {len(trashcan_files)} images with trashcans in training set")
+    # Find images containing the class
+    class_files = find_class_training_images(dataset_path, class_id, exclude_augmented=True)
+    print(f"\nFound {len(class_files)} ORIGINAL images with class {class_id}")
     
-    if len(trashcan_files) == 0:
-        print("⚠️  No trashcan images to augment!")
+    if len(class_files) == 0:
+        print(f"⚠️  No images found for class {class_id}!")
         return 0
     
     train_images_dir = dataset_path / 'train' / 'images'
     train_labels_dir = dataset_path / 'train' / 'labels'
     
     # Create augmentation pipeline
-    transform = create_augmentation_pipeline(aug_strength)
+    transform = get_augmentation_pipeline(aug_config)
     
     augmented_count = 0
     
-    print(f"\nCreating {num_augmentations} augmented copies per image...")
-    print(f"Total augmentations to create: {len(trashcan_files) * num_augmentations}")
+    print(f"Creating {num_augmentations} augmented copies per image...")
     
-    for img_path, label_path in tqdm(trashcan_files, desc="Augmenting trashcans"):
+    for img_path, label_path in tqdm(class_files, desc=f"Augmenting class {class_id}"):
         base_name = img_path.stem
         
         for aug_idx in range(num_augmentations):
@@ -196,11 +206,13 @@ def augment_trashcan_dataset(dataset_path, num_augmentations=15, aug_strength='s
                 # Apply augmentation
                 aug_img, aug_labels = augment_image_with_labels(img_path, label_path, transform)
                 
-                # Generate unique name
+                # Generate unique name with class ID to avoid collisions
                 unique_suffix = hashlib.md5(
-                    f"{base_name}_{aug_idx}_{np.random.randint(1000000)}".encode()
+                    f"{base_name}_{class_id}_{aug_idx}_{np.random.randint(1000000)}".encode()
                 ).hexdigest()[:8]
-                new_name = f"{base_name}_aug{aug_idx:02d}_{unique_suffix}"
+                
+                # Format: original_aug_c{class_id}_{idx}_{hash}
+                new_name = f"{base_name}_aug_c{class_id}_{aug_idx:02d}_{unique_suffix}"
                 
                 # Save augmented image
                 new_img_path = train_images_dir / f"{new_name}.jpg"
@@ -210,20 +222,53 @@ def augment_trashcan_dataset(dataset_path, num_augmentations=15, aug_strength='s
                 # Save augmented labels
                 new_label_path = train_labels_dir / f"{new_name}.txt"
                 with open(new_label_path, 'w') as f:
-                    for class_id, coords in aug_labels:
+                    for cid, coords in aug_labels:
                         coords_str = " ".join([f"{c:.6f}" for c in coords])
-                        f.write(f"{class_id} {coords_str}\n")
+                        f.write(f"{cid} {coords_str}\n")
                 
                 augmented_count += 1
                 
             except Exception as e:
-                print(f"  ⚠️  Failed to augment {img_path.name}: {e}")
+                print(f"Failed to augment {img_path.name}: {e}")
                 continue
     
-    print(f"\n✅ Successfully created {augmented_count} augmented images")
-    print(f"   Original trashcan images: {len(trashcan_files)}")
-    print(f"   Augmented copies: {augmented_count}")
-    print(f"   Total trashcan images now: {len(trashcan_files) + augmented_count}")
+    print(f"Created {augmented_count} augmented images for class {class_id}")
+    return augmented_count
+
+
+def clean_augmented_images(dataset_path: Path) -> int:
+    """Remove all augmented images (with '_aug' in filename) from training set.
+    
+    Args:
+        dataset_path: Path to the YOLO dataset root directory
+        
+    Returns:
+        Number of removed files (images + labels)
+    """
+    train_images_dir = dataset_path / 'train' / 'images'
+    train_labels_dir = dataset_path / 'train' / 'labels'
+    
+    removed_count = 0
+    
+    print("="*60)
+    print("CLEANING AUGMENTED IMAGES")
     print("="*60)
     
-    return augmented_count
+    # Remove augmented images
+    aug_images = list(train_images_dir.glob("*_aug*"))
+    for img_path in aug_images:
+        img_path.unlink()
+        removed_count += 1
+    
+    # Remove augmented labels
+    aug_labels = list(train_labels_dir.glob("*_aug*"))
+    for lbl_path in aug_labels:
+        lbl_path.unlink()
+        removed_count += 1
+    
+    print(f"\n✓ Removed {len(aug_images)} augmented images")
+    print(f"✓ Removed {len(aug_labels)} augmented labels")
+    print(f"Total files removed: {removed_count}")
+    print("="*60)
+    
+    return removed_count
