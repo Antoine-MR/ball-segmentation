@@ -236,6 +236,152 @@ def augment_class_dataset(dataset_path, class_id, num_augmentations=15, aug_conf
     return augmented_count
 
 
+def augment_image_with_masks(img_path, label_path, transform):
+    """Apply augmentation using masks to handle occlusion and label updates correctly.
+    
+    Args:
+        img_path: Path to input image
+        label_path: Path to YOLO format label file
+        transform: Albumentations transform pipeline (must support masks)
+        
+    Returns:
+        Tuple of (augmented_image, augmented_labels)
+    """
+    # Load image
+    img = cv2.imread(str(img_path))
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    h, w = img.shape[:2]
+    
+    # Load labels
+    with open(label_path, 'r') as f:
+        lines = f.readlines()
+    
+    masks = []
+    class_ids = []
+    
+    # Convert polygons to masks
+    for line in lines:
+        parts = line.strip().split()
+        if not parts:
+            continue
+        
+        class_id = int(parts[0])
+        coords = [float(p) for p in parts[1:]]
+        
+        # Create binary mask for this object
+        mask = np.zeros((h, w), dtype=np.uint8)
+        pts = []
+        for i in range(0, len(coords), 2):
+            pts.append([int(coords[i] * w), int(coords[i+1] * h)])
+        
+        if pts:
+            pts = np.array([pts], dtype=np.int32)
+            cv2.fillPoly(mask, pts, 1)
+            masks.append(mask)
+            class_ids.append(class_id)
+    
+    if not masks:
+        return img, []
+
+    # Apply augmentation (Image + Masks)
+    # This ensures geometric consistency and handles occlusion (CoarseDropout)
+    try:
+        transformed = transform(image=img, masks=masks)
+        aug_img = transformed['image']
+        aug_masks = transformed['masks']
+        
+        aug_h, aug_w = aug_img.shape[:2]
+        augmented_labels = []
+        
+        # Convert masks back to polygons
+        for i, mask in enumerate(aug_masks):
+            if np.sum(mask) < 10:  # Skip if object is mostly gone
+                continue
+                
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Find the largest contour (main part of the object)
+            if contours:
+                c = max(contours, key=cv2.contourArea)
+                if cv2.contourArea(c) < 50:  # Filter tiny fragments
+                    continue
+                    
+                # Simplify contour
+                epsilon = 0.005 * cv2.arcLength(c, True)
+                approx = cv2.approxPolyDP(c, epsilon, True)
+                
+                # Normalize coordinates
+                norm_coords = []
+                for pt in approx:
+                    x, y = pt[0]
+                    norm_coords.append(min(1.0, max(0.0, x / aug_w)))
+                    norm_coords.append(min(1.0, max(0.0, y / aug_h)))
+                
+                if len(norm_coords) >= 6:  # At least 3 points
+                    augmented_labels.append((class_ids[i], norm_coords))
+                    
+        return aug_img, augmented_labels
+        
+    except Exception as e:
+        print(f"Augmentation failed: {e}")
+        return img, []
+
+
+def augment_class_with_occlusion(dataset_path, class_id, num_augmentations=5):
+    """Augment a class with occlusion (hiding parts) and scaling.
+    
+    Uses mask-based augmentation to correctly update labels when parts are hidden.
+    """
+    print(f"\n{'='*60}")
+    print(f"OCCLUSION AUGMENTATION FOR CLASS {class_id}")
+    print(f"{'='*60}")
+    
+    # Define pipeline with CoarseDropout (occlusion) and Affine (scaling)
+    # mask_fill_value=0 ensures labels are updated where holes are punched
+    pipeline = Compose([
+        A.CoarseDropout(
+            max_holes=3, max_height=50, max_width=50, 
+            min_holes=1, min_height=20, min_width=20,
+            fill_value=0, mask_fill_value=0, p=0.8
+        ),
+        A.Affine(scale=(0.5, 0.9), p=0.7),  # Zoom out (make smaller)
+        A.HorizontalFlip(p=0.5),
+        A.RandomRotate90(p=0.5),
+    ])
+    
+    class_files = find_class_training_images(dataset_path, class_id, exclude_augmented=True)
+    print(f"Found {len(class_files)} images to augment")
+    
+    train_images_dir = dataset_path / 'train' / 'images'
+    train_labels_dir = dataset_path / 'train' / 'labels'
+    
+    count = 0
+    for img_path, label_path in tqdm(class_files, desc="Applying occlusion"):
+        base_name = img_path.stem
+        
+        for i in range(num_augmentations):
+            aug_img, aug_labels = augment_image_with_masks(img_path, label_path, pipeline)
+            
+            if not aug_labels:
+                continue
+                
+            # Save
+            suffix = hashlib.md5(f"{base_name}_{i}".encode()).hexdigest()[:6]
+            new_name = f"{base_name}_occ_{suffix}"
+            
+            cv2.imwrite(str(train_images_dir / f"{new_name}.jpg"), 
+                       cv2.cvtColor(aug_img, cv2.COLOR_RGB2BGR))
+            
+            with open(train_labels_dir / f"{new_name}.txt", 'w') as f:
+                for cid, coords in aug_labels:
+                    f.write(f"{cid} " + " ".join(map(str, coords)) + "\n")
+            
+            count += 1
+            
+    print(f"Created {count} occluded images")
+    return count
+
+
 def clean_augmented_images(dataset_path: Path) -> int:
     """Remove all augmented images (with '_aug' in filename) from training set.
     
