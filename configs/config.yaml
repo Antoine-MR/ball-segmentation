@@ -1,4 +1,4 @@
-# Ball Segmentation Project Configuration
+# Read through src/config.py, e.g. config.get('models.sam2_1.path')
 
 # Paths
 paths:
@@ -93,16 +93,3 @@ inference:
   default_image_size: 640
   show_labels: true
   show_conf: true
-
-# API keys (use environment variables in production)
-api:
-  roboflow:
-    workspace: ""  # Set via env: ROBOFLOW_WORKSPACE
-    project: ""    # Set via env: ROBOFLOW_PROJECT
-    api_key: ""    # Set via env: ROBOFLOW_API_KEY
-
-# Logging
-logging:
-  level: "INFO"
-  save_predictions: true
-  verbose: false

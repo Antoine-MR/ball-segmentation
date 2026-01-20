@@ -1,5 +1,13 @@
 ultralytics
 inference
-pillow
-tqdm
 groundingdino-py
+torch
+numpy
+opencv-python
+pillow
+matplotlib
+pyyaml
+tqdm
+ipython
+# augmentation.py uses the 1.x argument names (var_limit, max_holes, mask_fill_value)
+albumentations<2
